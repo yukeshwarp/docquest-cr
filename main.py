@@ -7,12 +7,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import io
 import tiktoken
 from docx import Document
+
 # Initialize Redis client
 redis_client = redis.StrictRedis(
     host="yuktestredis.redis.cache.windows.net",
     port=6379,
     password="VBhswgzkLiRpsHVUf4XEI2uGmidT94VhuAzCaB2tVjs=",
-    ssl=False,
+    ssl=True,  # Set SSL to True as per your Redis configuration
     decode_responses=True
 )
 
@@ -155,8 +156,12 @@ with st.sidebar:
                     except Exception as e:
                         st.error(f"Error processing {uploaded_file.name}: {e}")
 
-            redis_client.set("documents_data", json.dumps(processed_docs))
-            st.success("Documents uploaded to Redis!")
+            # Serialize processed documents and store in Redis
+            try:
+                redis_client.set("documents_data", json.dumps(processed_docs))
+                st.success("Documents uploaded to Redis!")
+            except Exception as e:
+                st.error(f"Error saving documents to Redis: {e}")
 
     if redis_client.exists("documents_data"):
         download_data = redis_client.get("documents_data")
