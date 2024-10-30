@@ -1,27 +1,22 @@
 import streamlit as st
 import json
-import redis
+from utils.pdf_processing import process_pdf_pages, process_pdf_task
 from utils.llm_interaction import ask_question
-from utils.pdf_processing import process_pdf_task
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import io
 import tiktoken
 from docx import Document
+import redis
 
 # Initialize Redis client
-redis_client = redis.StrictRedis(
-    host="yuktestredis.redis.cache.windows.net",
-    port=6379,
-    password="VBhswgzkLiRpsHVUf4XEI2uGmidT94VhuAzCaB2tVjs=",
-    ssl=True,  # Set SSL to True as per your Redis configuration
-    decode_responses=True
-)
+redis_client = redis.Redis(host='localhost', port=6379, db=0)  # Adjust Redis settings as needed
 
-# Initialize session states for documents and chat history
+# Initialize session states for chat history
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "uploaded_files" not in st.session_state:
     st.session_state.uploaded_files = []
+
 
 # Token counting function
 def count_tokens(text, model="gpt-4o"):
@@ -29,13 +24,16 @@ def count_tokens(text, model="gpt-4o"):
     tokens = encoding.encode(text)
     return len(tokens)
 
+
 # Handle question prompt and add spinner at the bottom
 def handle_question(prompt, spinner_placeholder):
     if prompt:
         try:
             input_tokens = count_tokens(prompt)
-            document_data = redis_client.get("documents_data")  # Retrieve documents from Redis
-            total_input_tokens = input_tokens + count_tokens(document_data)
+            # Retrieve document data from Redis
+            document_data = json.loads(redis_client.get("documents") or "{}")
+            document_tokens = count_tokens(json.dumps(document_data))
+            total_input_tokens = input_tokens + document_tokens
 
             # Display spinner at the footer during question processing
             with spinner_placeholder.container():
@@ -54,7 +52,7 @@ def handle_question(prompt, spinner_placeholder):
                     unsafe_allow_html=True,
                 )
                 answer = ask_question(
-                    redis_client, prompt, st.session_state.chat_history  # Updated to pass Redis client
+                    document_data, prompt, st.session_state.chat_history
                 )
 
             output_tokens = count_tokens(answer)
@@ -70,13 +68,16 @@ def handle_question(prompt, spinner_placeholder):
         except Exception as e:
             st.error(f"Error processing question: {e}")
         finally:
+            # Clear the spinner placeholder after processing
             spinner_placeholder.empty()
+
 
 # Reset session data
 def reset_session():
     st.session_state.chat_history = []
     st.session_state.uploaded_files = []
-    redis_client.delete("documents_data")  # Clear Redis data
+    redis_client.delete("documents")  # Clear Redis document storage
+
 
 # Display chat history
 def display_chat():
@@ -114,6 +115,7 @@ def display_chat():
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
 
+
 # Generate Word document for each chat
 def generate_word_document(content):
     doc = Document()
@@ -123,6 +125,7 @@ def generate_word_document(content):
     doc.add_paragraph(f"Input Tokens: {content['input_tokens']}")
     doc.add_paragraph(f"Output Tokens: {content['output_tokens']}")
     return doc
+
 
 # Sidebar for file upload
 with st.sidebar:
@@ -134,43 +137,42 @@ with st.sidebar:
     )
     if uploaded_files:
         new_files = []
-        for uploaded_file in uploaded_files:
+        for index, uploaded_file in enumerate(uploaded_files):
             if uploaded_file.name not in st.session_state.uploaded_files:
                 new_files.append(uploaded_file)
                 st.session_state.uploaded_files.append(uploaded_file.name)
+            else:
+                st.info(f"{uploaded_file.name} is already uploaded.")
 
+        # Processing newly uploaded files
         if new_files:
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                future_to_file = {
-                    executor.submit(
-                        process_pdf_task, uploaded_file
-                    ): uploaded_file for uploaded_file in new_files
-                }
-                processed_docs = {}
-                for future in as_completed(future_to_file):
-                    uploaded_file = future_to_file[future]
-                    try:
-                        document_data = future.result()
-                        processed_docs[uploaded_file.name] = document_data
-                        st.success(f"{uploaded_file.name} processed successfully!")
-                    except Exception as e:
-                        st.error(f"Error processing {uploaded_file.name}: {e}")
+            progress_text = st.empty()
+            progress_bar = st.progress(0)
+            total_files = len(new_files)
 
-            # Serialize processed documents and store in Redis
-            try:
-                redis_client.json().set("documents_data", json.dumps(processed_docs))
-                st.success("Documents uploaded to Redis!")
-            except Exception as e:
-                st.error(f"Error saving documents to Redis: {e}")
+            with st.spinner("Learning about your document(s)..."):
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    future_to_file = {
+                        executor.submit(
+                            process_pdf_task, uploaded_file, first_file=(index == 0)
+                        ): uploaded_file
+                        for index, uploaded_file in enumerate(new_files)
+                    }
 
-    if redis_client.exists("documents_data"):
-        download_data = redis_client.get("documents_data")
-        st.download_button(
-            label="Download Document Analysis",
-            data=download_data,
-            file_name="document_analysis.json",
-            mime="application/json",
-        )
+                    for i, future in enumerate(as_completed(future_to_file)):
+                        uploaded_file = future_to_file[future]
+                        try:
+                            document_data = future.result()
+                            # Store document data in Redis
+                            redis_client.set(uploaded_file.name, json.dumps(document_data))
+                            st.success(f"{uploaded_file.name} processed successfully!")
+                        except Exception as e:
+                            st.error(f"Error processing {uploaded_file.name}: {e}")
+
+                        progress_bar.progress((i + 1) / total_files)
+
+            progress_text.text("Processing complete.")
+            progress_bar.empty()
 
 # Main app header and subtitle
 st.image("logoD.png", width=200)
@@ -178,17 +180,21 @@ st.title("docQuest")
 st.subheader("Unveil the Essence, Compare Easily, Analyze Smartly", divider="orange")
 
 # Display the chat interface and handle user prompt
-if redis_client.exists("documents_data"):
+if st.session_state.uploaded_files:
     prompt = st.chat_input("Ask me anything about your documents", key="chat_input")
     spinner_placeholder = st.empty()  # Placeholder for the spinner at the footer
     if prompt:
-        handle_question(prompt, spinner_placeholder)
+        handle_question(
+            prompt, spinner_placeholder
+        )  # Pass the spinner placeholder to the handler
 
 # Render chat messages
 display_chat()
 
 # Token statistics in the sidebar
 total_input_tokens = sum(chat["input_tokens"] for chat in st.session_state.chat_history)
-total_output_tokens = sum(chat["output_tokens"] for chat in st.session_state.chat_history)
+total_output_tokens = sum(
+    chat["output_tokens"] for chat in st.session_state.chat_history
+)
 st.sidebar.write(f"Total Input Tokens: {total_input_tokens}")
 st.sidebar.write(f"Total Output Tokens: {total_output_tokens}")
