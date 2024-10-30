@@ -158,7 +158,7 @@ with st.sidebar:
 
             # Serialize processed documents and store in Redis
             try:
-                redis_client.set("documents_data", json.dumps(processed_docs))
+                redis_client.json().set("documents_data", json.dumps(processed_docs))
                 st.success("Documents uploaded to Redis!")
             except Exception as e:
                 st.error(f"Error saving documents to Redis: {e}")
