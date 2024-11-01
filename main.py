@@ -12,7 +12,7 @@ from docx import Document
 redis_client = redis.Redis(
     host="yuktestredis.redis.cache.windows.net",
     port=6379,
-    password="VBhswgzkLiRpsHVUf4XEI2uGmidT94VhuAzCaB2tVjs="
+    password="VBhswgzkLiRpsHVUf4XEI2uGmidT94VhuAzCaB2tVjs=")
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
