@@ -12,7 +12,7 @@ from docx import Document
 # Initialize Redis client
 redis_client = redis.StrictRedis(
     host="yuktestredis.redis.cache.windows.net",  # Replace with your Redis host
-    port=6380,  # Redis SSL port
+    port=6379,  # Redis SSL port
     password="VBhswgzkLiRpsHVUf4XEI2uGmidT94VhuAzCaB2tVjs=",  # Replace with your Redis password
     ssl=False,  # Enable SSL for Azure Redis
 )
